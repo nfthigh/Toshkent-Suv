@@ -2,7 +2,7 @@ import logging
 import asyncio
 import aiosqlite
 import re
-import os # Добавляем импорт модуля os
+import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -11,6 +11,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatType, ContentType
+import sys # Добавляем импорт sys для чистого выхода при критических ошибках
 
 # --- Конфигурационные значения, читаемые из переменных окружения ---
 # ВАЖНО: Эти переменные должны быть установлены в вашем окружении на Render!
@@ -21,10 +22,10 @@ from aiogram.enums import ParseMode, ChatType, ContentType
 # DATABASE_PATH: Путь к файлу базы данных (например: /data/clients.db). Необязательно, по умолчанию clients.db.
 
 API_TOKEN = os.environ.get('API_TOKEN')
-ADMIN_CHAT_IDS_STR = os.environ.get('ADMIN_CHAT_IDS', '') # Читаем строку, по умолчанию пустая строка
-GROUP_CHAT_ID_STR = os.environ.get('GROUP_CHAT_ID') # Читаем строку
-PRICE_PER_BOTTLE_STR = os.environ.get('PRICE_PER_BOTTLE', '16000') # Читаем строку, по умолчанию 16000
-DATABASE_PATH = os.environ.get('DATABASE_PATH', 'clients.db') # Путь к БД, по умолчанию 'clients.db'
+ADMIN_CHAT_IDS_STR = os.environ.get('ADMIN_CHAT_IDS', '')
+GROUP_CHAT_ID_STR = os.environ.get('GROUP_CHAT_ID')
+PRICE_PER_BOTTLE_STR = os.environ.get('PRICE_PER_BOTTLE', '16000')
+DATABASE_PATH = os.environ.get('DATABASE_PATH', 'clients.db') # Путь к БД
 
 # Преобразование строковых переменных в нужные типы
 ADMIN_CHAT_IDS = []
@@ -55,19 +56,17 @@ except (ValueError, TypeError):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Проверка наличия критически важного токена перед запуском
+# Проверка наличия критически важного токена перед запуском.
+# Эта проверка здесь нужна, чтобы log был виден сразу,
+# но основное завершение программы будет в __main__
 if not API_TOKEN:
     logger.critical("Переменная окружения API_TOKEN не установлена! Бот не может быть запущен.")
-    # В реальном приложении здесь можно выбросить исключение или использовать sys.exit(1)
-    # Для простого скрипта в main() будет проверка перед запуском asyncio.run()
-    # Но эта проверка полезна, если скрипт запускается не через if __name__ == "__main__":
 
 
 bot = Bot(token=API_TOKEN, timeout=60)
-storage = MemoryStorage() # Используем MemoryStorage для простоты; для продакшена рассмотрите FileStorage или RedisStorage
+storage = MemoryStorage() # Используем MemoryStorage
 dp = Dispatcher(storage=storage)
-db: aiosqlite.Connection = None  # Глобальное соединение; инициализируется в main()
-
+db: aiosqlite.Connection = None  # Глобальное соединение
 
 # --- Вспомогательные функции ---
 def fmt_phone(num: str) -> str:
@@ -1341,7 +1340,8 @@ async def main():
     except Exception as e:
         logger.critical(f"Критическая ошибка при подключении или инициализации БД по пути '{DATABASE_PATH}': {e}")
         # В случае критической ошибки с БД, бот не сможет работать. Завершаем программу.
-        exit(1)
+        # Использование sys.exit(1) более явно, чем просто return
+        sys.exit(1)
 
 
     logger.info("Запуск бота...")
@@ -1436,21 +1436,37 @@ async def main():
         await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"Ошибка во время работы поллинга: {e}")
+        # В случае ошибки поллинга, пытаемся корректно завершить фоновую задачу и закрыть БД
     finally:
         # Отменяем keep-alive задачу перед завершением бота
         logger.info("Отмена Keep-alive task...")
-        keep_alive_task.cancel()
-        try:
-            await keep_alive_task # Ждем отмены задачи
-            logger.info("Keep-alive task cancelled successfully.")
-        except asyncio.CancelledError:
-             logger.info("Keep-alive task cancellation confirmed.")
-        except Exception as e:
-             logger.warning(f"Ошибка при ожидании отмены Keep-alive task: {e}")
+        if 'keep_alive_task' in locals() and not keep_alive_task.done():
+            keep_alive_task.cancel()
+            try:
+                # Ждем отмены задачи с таймаутом, чтобы не блокировать завершение навсегда
+                await asyncio.wait_for(keep_alive_task, timeout=5.0)
+                logger.info("Keep-alive task cancelled successfully.")
+            except asyncio.CancelledError:
+                 logger.info("Keep-alive task cancellation confirmed.")
+            except asyncio.TimeoutError:
+                 logger.warning("Timeout waiting for Keep-alive task cancellation.")
+            except Exception as e:
+                 logger.warning(f"Ошибка при ожидании отмены Keep-alive task: {e}")
+        else:
+             logger.info("Keep-alive task не была запущена или уже завершена.")
+
 
         if db:
-            await db.close()
-            logger.info("Соединение с БД закрыто.")
+            # Проверяем, открыто ли еще соединение перед закрытием
+            if not db.closed:
+                try:
+                    await db.close()
+                    logger.info("Соединение с БД закрыто.")
+                except Exception as e:
+                     logger.error(f"Ошибка при закрытии БД: {e}")
+            else:
+                 logger.info("Соединение с БД уже закрыто.")
+
         logger.info("Бот остановлен.")
 
 
@@ -1458,11 +1474,13 @@ if __name__ == "__main__":
     # Финальная проверка API_TOKEN перед запуском asyncio.run()
     if not API_TOKEN:
          logger.critical("API_TOKEN не установлен! Завершение работы.")
-         exit(1) # Гарантированный выход, если токен не задан
+         sys.exit(1) # Гарантированный выход, если токен не задан
 
     try:
+        # Запускаем основную асинхронную функцию
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Бот остановлен вручную по KeyboardInterrupt")
     except Exception as e:
+        # Ловим любые необработанные исключения верхнего уровня
         logger.critical(f"Бот завершился с необработанным исключением: {e}", exc_info=True)
