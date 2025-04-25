@@ -1,4 +1,8 @@
-import logging, asyncio, aiosqlite, re
+import logging
+import asyncio
+import aiosqlite
+import re
+import os # Добавляем импорт модуля os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -8,16 +12,56 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode, ChatType, ContentType
 
-# !!! ВАЖНО: Замените эти значения на ваши реальные !!!
-API_TOKEN = '5647678711:AAHYnN64A-1OdDtzSUGZ4F6i_-MQhNHke3M'
-ADMIN_CHAT_IDS = [7880940719,5366741102,  ] # Список ID администраторов (может быть несколько)
-GROUP_CHAT_ID = -4623233228 # ID чата для уведомлений о новых заказах (может быть группой или каналом)
-# !!! Конец важных значений !!!
+# --- Конфигурационные значения, читаемые из переменных окружения ---
+# ВАЖНО: Эти переменные должны быть установлены в вашем окружении на Render!
+# API_TOKEN: Токен вашего бота от BotFather. Обязательно!
+# ADMIN_CHAT_IDS: Список ID администраторов через запятую (например: 123456789,987654321). Необязательно, если нет админов.
+# GROUP_CHAT_ID: ID чата группы/канала для уведомлений (например: -1001234567890). Необязательно.
+# PRICE_PER_BOTTLE: Цена за бутылку (число). Необязательно, по умолчанию 16000.
+# DATABASE_PATH: Путь к файлу базы данных (например: /data/clients.db). Необязательно, по умолчанию clients.db.
 
-PRICE_PER_BOTTLE = 16000
+API_TOKEN = os.environ.get('API_TOKEN')
+ADMIN_CHAT_IDS_STR = os.environ.get('ADMIN_CHAT_IDS', '') # Читаем строку, по умолчанию пустая строка
+GROUP_CHAT_ID_STR = os.environ.get('GROUP_CHAT_ID') # Читаем строку
+PRICE_PER_BOTTLE_STR = os.environ.get('PRICE_PER_BOTTLE', '16000') # Читаем строку, по умолчанию 16000
+DATABASE_PATH = os.environ.get('DATABASE_PATH', 'clients.db') # Путь к БД, по умолчанию 'clients.db'
+
+# Преобразование строковых переменных в нужные типы
+ADMIN_CHAT_IDS = []
+if ADMIN_CHAT_IDS_STR:
+    for chat_id_str in ADMIN_CHAT_IDS_STR.split(','):
+        try:
+            ADMIN_CHAT_IDS.append(int(chat_id_str.strip()))
+        except ValueError:
+            logger.warning(f"Неверный формат ID администратора: '{chat_id_str.strip()}' в ADMIN_CHAT_IDS")
+
+GROUP_CHAT_ID = None
+if GROUP_CHAT_ID_STR:
+    try:
+        GROUP_CHAT_ID = int(GROUP_CHAT_ID_STR)
+    except ValueError:
+         logger.warning(f"Неверный формат ID группы/канала: '{GROUP_CHAT_ID_STR}' в GROUP_CHAT_ID")
+
+
+try:
+    PRICE_PER_BOTTLE = int(PRICE_PER_BOTTLE_STR)
+except (ValueError, TypeError):
+    PRICE_PER_BOTTLE = 16000
+    logger.warning(f"Переменная окружения PRICE_PER_BOTTLE установлена неверно или отсутствует. Используется значение по умолчанию: {PRICE_PER_BOTTLE}")
+
+# --- Конец конфигурационных значений ---
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Проверка наличия критически важного токена перед запуском
+if not API_TOKEN:
+    logger.critical("Переменная окружения API_TOKEN не установлена! Бот не может быть запущен.")
+    # В реальном приложении здесь можно выбросить исключение или использовать sys.exit(1)
+    # Для простого скрипта в main() будет проверка перед запуском asyncio.run()
+    # Но эта проверка полезна, если скрипт запускается не через if __name__ == "__main__":
+
 
 bot = Bot(token=API_TOKEN, timeout=60)
 storage = MemoryStorage() # Используем MemoryStorage для простоты; для продакшена рассмотрите FileStorage или RedisStorage
@@ -950,13 +994,12 @@ async def enter_addr_manual(message: types.Message, state: FSMContext):
     await state.set_state(OrderForm.address)
 
 # Хэндлер для текста в состоянии OrderForm.location, который не является кнопкой
-@dp.message(OrderForm.location, F.text)
-async def handle_location_text_input(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = await get_user_lang(message.from_user.id, state)
-    # Этот хэндлер сработает, если пользователь ввел текст, который не совпадает
-    # ни с одной из кнопок на клавиатуре kb_location.
-    await message.reply(TEXT[lang]['invalid_input'] + "\n\n" + TEXT[lang]['send_location'], reply_markup=kb_location(lang))
+# Этот хэндлер теперь избыточен, т.к. default_text_handler поймает его.
+# @dp.message(OrderForm.location, F.text)
+# async def handle_location_text_input(message: types.Message, state: FSMContext):
+#     data = await state.get_data()
+#     lang = await get_user_lang(message.from_user.id, state)
+#     await message.reply(TEXT[lang]['invalid_input'] + "\n\n" + TEXT[lang]['send_location'], reply_markup=kb_location(lang))
 
 
 @dp.message(OrderForm.address, F.text) # Ловим любой текст в этом состоянии (кнопки Назад/Отмена ловятся ранее)
@@ -992,7 +1035,7 @@ async def handle_quantity_text(message: types.Message, state: FSMContext):
     text = message.text.strip()
 
     if not text.isdigit() or int(text) <= 0:
-        err = TEXT[lang]['invalid_input'] + (" Введите положительное число." if lang == "ru" else " Iltimos, musbat raqam kiriting.")
+        err = TEXT[lang]['invalid_input'] + (" Введите положительное число." if lang == "ru" else " Iltimas, musbat raqam kiriting.")
         return await message.reply(err)
 
     qty = int(text)
@@ -1122,7 +1165,11 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
 
     # Уведомление админов и группы с инлайн-кнопками для статуса (на русском)
     admin_order_kb = kb_admin_order_status(order_id, 'ru') # Кнопки статуса для админа всегда на русском
-    all_recipients = set(ADMIN_CHAT_IDS + [GROUP_CHAT_ID])
+
+    all_recipients = set(ADMIN_CHAT_IDS)
+    if GROUP_CHAT_ID is not None:
+        all_recipients.add(GROUP_CHAT_ID)
+
     for chat_id in all_recipients:
         if chat_id is None: continue # Пропускаем None ID
         try:
@@ -1176,6 +1223,32 @@ async def cancel_process(message: types.Message, state: FSMContext):
     await message.reply(TEXT[lang]['process_cancelled'], reply_markup=kb_main(lang, uid in ADMIN_CHAT_IDS, is_registered))
 
 
+# --- Keep-alive задача ---
+async def keep_alive(bot: Bot, interval=600):
+    """
+    Периодически отправляет легкий запрос к Telegram API для поддержания активности.
+    Работает в фоне.
+    interval - интервал в секундах (по умолчанию 10 минут = 600 сек).
+    Render спит через 15 минут (900 сек) неактивности.
+    """
+    logger.info(f"Keep-alive task started with interval {interval}s.")
+    while True:
+        try:
+            # Выполняем легкий API-запрос, например, getMe
+            await bot.get_me()
+            # logger.debug("Keep-alive ping sent.") # Можно включить для отладки
+        except asyncio.CancelledError:
+            # Это ожидаемое исключение при отмене задачи
+            logger.info("Keep-alive task received cancellation signal.")
+            raise # Пробрасываем исключение дальше для корректной отмены
+        except Exception as e:
+            logger.error(f"Keep-alive task error: {e}")
+            # Обработка других ошибок, но не прерываем цикл
+
+        # Спим до следующего интервала
+        await asyncio.sleep(interval)
+
+
 # --- Default handler (ловит все остальные текстовые сообщения) ---
 # Этот хэндлер должен быть зарегистрирован ПОСЛЕДНИМ
 @dp.message(F.text)
@@ -1185,6 +1258,16 @@ async def default_text_handler(message: types.Message, state: FSMContext):
 
     is_registered = await is_user_registered(uid)
 
+    # Проверяем, не находится ли пользователь в процессе выбора языка
+    current_state = await state.get_state()
+    if current_state == LangSelect.choosing.state:
+        # Если пользователь ввел что-то не то в состоянии выбора языка
+        await message.reply(TEXT[lang]['invalid_input'] + " " + TEXT['ru']['choose_language'], reply_markup=kb_language_select()) # Всегда показываем RU текст для выбора языка
+        return
+
+    # Если пользователь не в процессе выбора языка или в другом FSM состоянии,
+    # или если это просто мусорный ввод вне состояний.
+    # kb_main будет построена с учетом регистрации пользователя.
     await message.reply(TEXT[lang]['invalid_input'] + " " + TEXT[lang]['back_to_main'], reply_markup=kb_main(lang, uid in ADMIN_CHAT_IDS, is_registered))
     await state.clear()
 
@@ -1197,6 +1280,13 @@ async def default_other_handler(message: types.Message, state: FSMContext):
 
     is_registered = await is_user_registered(uid)
 
+    # Проверяем, не находится ли пользователь в процессе выбора языка (где ожидается текст)
+    current_state = await state.get_state()
+    if current_state == LangSelect.choosing.state:
+         # Если в состоянии выбора языка прислали не текст
+         await message.reply(TEXT[lang]['invalid_input'] + " " + TEXT['ru']['choose_language'], reply_markup=kb_language_select()) # Всегда показываем RU текст для выбора языка
+         return
+
     await message.reply(TEXT[lang]['invalid_input'] + " " + TEXT[lang]['back_to_main'], reply_markup=kb_main(lang, uid in ADMIN_CHAT_IDS, is_registered))
     await state.clear()
 
@@ -1204,7 +1294,7 @@ async def default_other_handler(message: types.Message, state: FSMContext):
 # --- Инициализация БД ---
 async def init_db():
     """Инициализирует базу данных (создает таблицы, если их нет)."""
-    logger.info("Инициализация базы данных...")
+    logger.info(f"Инициализация базы данных в файле: {DATABASE_PATH}...")
     if db is None:
          logger.error("Соединение с БД не установлено в init_db.")
          return
@@ -1243,44 +1333,81 @@ async def main():
     global db
     logger.info("Подключение к базе данных...")
     try:
-        db = await aiosqlite.connect("clients.db")
+        # Указываем путь к файлу базы данных. На Render он сохранится в файловой системе.
+        db = await aiosqlite.connect(DATABASE_PATH)
         db.row_factory = aiosqlite.Row
-        logger.info("Подключение к БД успешно.")
+        logger.info(f"Подключение к БД по пути '{DATABASE_PATH}' успешно.")
         await init_db()
     except Exception as e:
-        logger.critical(f"Критическая ошибка при подключении или инициализации БД: {e}")
-        return
+        logger.critical(f"Критическая ошибка при подключении или инициализации БД по пути '{DATABASE_PATH}': {e}")
+        # В случае критической ошибки с БД, бот не сможет работать. Завершаем программу.
+        exit(1)
+
 
     logger.info("Запуск бота...")
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-    except Exception as e:
-        logger.warning(f"Не удалось удалить вебхук или ожидающие обновления: {e}")
+    # Log config values (excluding token) for debugging on Render
+    logger.info(f"ADMIN_CHAT_IDS: {ADMIN_CHAT_IDS}")
+    logger.info(f"GROUP_CHAT_ID: {GROUP_CHAT_ID}")
+    logger.info(f"PRICE_PER_BOTTLE: {PRICE_PER_BOTTLE}")
+    logger.info(f"DATABASE_PATH: {DATABASE_PATH}")
+
 
     try:
-        # Порядок регистрации хэндлеров:
+         # Используйте get_webhook_info, чтобы определить, нужно ли удалять вебхук.
+         # Если бот деплоится как Web Service с вебхуками, удалять не нужно.
+         # Если как Background Worker с long-polling (как здесь), нужно.
+         try:
+              webhook_info = await bot.get_webhook_info()
+              if webhook_info.url: # Если вебхук установлен
+                  logger.warning(f"Обнаружен активный вебхук: {webhook_info.url}. Удаление...")
+                  await bot.delete_webhook(drop_pending_updates=True)
+                  logger.info("Вебхук успешно удален.")
+              else:
+                  logger.info("Активных вебхуков не обнаружено.")
+         except Exception as e:
+              # Может быть ошибка, если бот не запущен или проблемы с сетью
+              logger.warning(f"Не удалось получить или удалить вебхук: {e}")
+              logger.info("Пробуем продолжить без удаления вебхука...")
+
+
+        # --- Запуск Keep-alive задачи ---
+        # Создаем задачу для поддержания активности, она будет работать параллельно с поллингом
+        # Интервал 600 секунд (10 минут) чтобы избежать сна Render (15 минут)
+        keep_alive_task = asyncio.create_task(keep_alive(bot, interval=600))
+        logger.info("Keep-alive task scheduled.")
+
+
+        # --- Регистрация хэндлеров ---
+        # Порядок регистрации хэндлеров важен!
         # 1. Команды (/start)
         dp.message.register(cmd_start, Command("start"))
 
         # 2. Хэндлеры кнопок, специфичные для состояний FSM (Отмена, Назад, Пропустить)
+        # Важно: эти хэндлеры должны быть выше, чем default_text_handler,
+        # чтобы кнопки обрабатывались в первую очередь, если они совпадают с текстом.
         dp.message.register(handle_cancel_btn, StateFilter(OrderForm), F.text.in_([BTN['ru']['cancel'], BTN['uz']['cancel']]))
         dp.message.register(handle_back_btn, StateFilter(OrderForm.address, OrderForm.additional, OrderForm.quantity), F.text.in_([BTN['ru']['back'], BTN['uz']['back']]))
         dp.message.register(handle_skip_btn, OrderForm.additional, F.text.in_([BTN['ru']['skip'], BTN['uz']['skip']]))
 
         # 3. Хэндлеры FSM по типам контента (contact, location, photo, text) для конкретных состояний
+        # Хэндлер выбора языка должен быть перед дефолтными, но может быть после команд и специфичных кнопок.
         dp.message.register(process_lang, LangSelect.choosing, F.text.in_(["🇷🇺 Русский", "🇺🇿 Ўзбек"]))
         dp.message.register(reg_contact, OrderForm.contact, F.content_type == "contact")
-        dp.message.register(prompt_contact_again, OrderForm.contact) # Ловит все остальное в этом состоянии
+        dp.message.register(prompt_contact_again, OrderForm.contact) # Ловит все остальное в этом состоянии F.text
         dp.message.register(reg_name_text, OrderForm.name, F.content_type == "text")
         dp.message.register(reg_name_photo, OrderForm.name, F.content_type == "photo")
         dp.message.register(loc_received, OrderForm.location, F.content_type == "location")
         dp.message.register(enter_addr_manual, OrderForm.location, F.text.in_([BTN['ru']['enter_address'], BTN['uz']['enter_address']]))
-        dp.message.register(handle_location_text_input, OrderForm.location, F.text) # Текст в location, который не кнопка
+        # handle_location_text_input больше не нужен, т.к. default_text_handler ловит некорректный текст и предлагает начать заново.
+        # dp.message.register(handle_location_text_input, OrderForm.location, F.text) # Если нужен специфичный ответ на текст в location
+
         dp.message.register(handle_address_text, OrderForm.address, F.text)
         dp.message.register(handle_additional_text, OrderForm.additional, F.text)
         dp.message.register(handle_quantity_text, OrderForm.quantity, F.text)
 
         # 4. Хэндлеры инлайн-кнопок (подтверждение/отмена заказа, изменение статуса админом, админские подтверждения)
+        # Callback queries обрабатываются независимо от состояния, если Filter не ограничивает.
+        # Но регистрация тут логична для структуры кода.
         dp.callback_query.register(confirm_order, StateFilter(OrderForm.confirm), F.data == "order_confirm")
         dp.callback_query.register(cancel_order_callback, StateFilter(OrderForm.confirm), F.data == "order_cancel")
         dp.callback_query.register(handle_admin_clear_callback, AdminStates.main, F.data.startswith("admin_clear_"))
@@ -1290,6 +1417,7 @@ async def main():
 
 
         # 5. Общие хэндлеры кнопок (Мои заказы, Сменить язык, Начать сначала, Управление БД), работающие из любого состояния
+        # Регистрируются до default handlers
         dp.message.register(handle_start_over_btn, F.text.in_([BTN['ru']['start_over'], BTN['uz']['start_over']]))
         dp.message.register(handle_change_lang_btn, F.text.in_([TEXT['ru']['change_lang'], TEXT['uz']['change_lang']]))
         dp.message.register(handle_my_orders_btn, F.text.in_([BTN['ru']['my_orders'], BTN['uz']['my_orders']]))
@@ -1297,17 +1425,29 @@ async def main():
         dp.message.register(handle_manage_db_btn, F.text.in_([BTN['ru']['manage_db'], BTN['uz']['manage_db']])) # Admin only
 
 
-        # 6. Дефолтные хэндлеры (ловящие все остальное), размещенные в конце.
+        # 6. Дефолтные хэндлеры (ловящие все остальное), размещенные в самом конце.
         # Non-text first
         dp.message.register(default_other_handler, ~F.text & ~F.content_type.in_([ContentType.CONTACT, ContentType.LOCATION, ContentType.PHOTO]))
         # Text last
         dp.message.register(default_text_handler, F.text)
+        # --- Конец регистрации хэндлеров ---
 
 
         await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"Ошибка во время работы поллинга: {e}")
     finally:
+        # Отменяем keep-alive задачу перед завершением бота
+        logger.info("Отмена Keep-alive task...")
+        keep_alive_task.cancel()
+        try:
+            await keep_alive_task # Ждем отмены задачи
+            logger.info("Keep-alive task cancelled successfully.")
+        except asyncio.CancelledError:
+             logger.info("Keep-alive task cancellation confirmed.")
+        except Exception as e:
+             logger.warning(f"Ошибка при ожидании отмены Keep-alive task: {e}")
+
         if db:
             await db.close()
             logger.info("Соединение с БД закрыто.")
@@ -1315,6 +1455,11 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Финальная проверка API_TOKEN перед запуском asyncio.run()
+    if not API_TOKEN:
+         logger.critical("API_TOKEN не установлен! Завершение работы.")
+         exit(1) # Гарантированный выход, если токен не задан
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
